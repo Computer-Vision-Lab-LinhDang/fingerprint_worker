@@ -1,8 +1,5 @@
 
 from enum import Enum
-from dataclasses import dataclass, field
-from typing import Any, Optional
-
 
 # ── Enums ────────────────────────────────────────────────────
 class TaskType(str, Enum):
@@ -25,19 +22,19 @@ class WorkerStatus(str, Enum):
 
 
 # ── Orchestrator → Worker ────────────────────────────────────
-@dataclass
-class TaskPayload:
-    task_id: str = ""
-    task_type: str = ""
-    image_url: str = ""
-    model_name: str = "default"
+class TaskPayload(object):
+    def __init__(self, **kwargs):
+        self.task_id = kwargs.get("task_id", "")
+        self.task_type = kwargs.get("task_type", "")
+        self.image_url = kwargs.get("image_url", "")
+        self.model_name = kwargs.get("model_name", "default")
 
 
-@dataclass
-class MatchPayload:
-    task_id: str = ""
-    task_type: str = "match"
-    query_vector: list = field(default_factory=list)
-    candidate_vectors: list = field(default_factory=list)
-    top_k: int = 5
-    threshold: float = 0.7
+class MatchPayload(object):
+    def __init__(self, **kwargs):
+        self.task_id = kwargs.get("task_id", "")
+        self.task_type = kwargs.get("task_type", "match")
+        self.query_vector = kwargs.get("query_vector", [])
+        self.candidate_vectors = kwargs.get("candidate_vectors", [])
+        self.top_k = kwargs.get("top_k", 5)
+        self.threshold = kwargs.get("threshold", 0.7)
