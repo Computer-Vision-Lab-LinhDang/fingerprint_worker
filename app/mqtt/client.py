@@ -69,11 +69,19 @@ class MQTTWorkerClient:
 
     # ── Connect ──────────────────────────────────────────────
     def connect(self) -> None:
-        self._client = mqtt.Client(
-            callback_api_version=mqtt.CallbackAPIVersion.VERSION2,
-            client_id=self._settings.mqtt_client_id,
-            protocol=mqtt.MQTTv311,
-        )
+        # Support both paho-mqtt v1.x (Jetson Nano) and v2.x (PC)
+        try:
+            self._client = mqtt.Client(
+                callback_api_version=mqtt.CallbackAPIVersion.VERSION2,
+                client_id=self._settings.mqtt_client_id,
+                protocol=mqtt.MQTTv311,
+            )
+        except (AttributeError, TypeError):
+            # paho-mqtt v1.x — no CallbackAPIVersion
+            self._client = mqtt.Client(
+                client_id=self._settings.mqtt_client_id,
+                protocol=mqtt.MQTTv311,
+            )
 
         if self._settings.MQTT_USERNAME:
             self._client.username_pw_set(
@@ -117,9 +125,11 @@ class MQTTWorkerClient:
         self._connected = False
         self.stats["last_disconnected_at"] = time.time()
 
-    # ── Callbacks ────────────────────────────────────────────
-    def _on_connect(self, client, userdata, flags, reason_code, properties) -> None:
-        if reason_code == 0:
+    # ── Callbacks (compatible with both paho v1.x and v2.x) ──
+    def _on_connect(self, client, userdata, flags, *args) -> None:
+        # v1: args = (rc,)  |  v2: args = (reason_code, properties)
+        rc = args[0]
+        if rc == 0:
             self._connected = True
             self.stats["connect_count"] += 1
             self.stats["last_connected_at"] = time.time()
@@ -135,13 +145,15 @@ class MQTTWorkerClient:
             self._send_heartbeat(status=WorkerStatus.ONLINE)
             self._start_heartbeat()
         else:
-            logger.error("MQTT connection failed, rc=%s", reason_code)
+            logger.error("MQTT connection failed, rc=%s", rc)
 
-    def _on_disconnect(self, client, userdata, flags, reason_code, properties) -> None:
+    def _on_disconnect(self, client, userdata, *args) -> None:
+        # v1: args = (rc,)  |  v2: args = (flags, reason_code, properties)
         self._connected = False
         self.stats["last_disconnected_at"] = time.time()
-        if reason_code != 0:
-            logger.warning("MQTT connection lost (rc=%s)", reason_code)
+        rc = args[-2] if len(args) >= 2 else args[0]
+        if rc != 0:
+            logger.warning("MQTT connection lost (rc=%s)", rc)
 
     def _on_message(self, client, userdata, message: mqtt.MQTTMessage) -> None:
         self.stats["messages_received"] += 1
