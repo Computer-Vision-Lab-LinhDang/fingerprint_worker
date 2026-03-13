@@ -206,15 +206,15 @@ class MQTTWorkerClient:
                 logger.error("Heartbeat error: %s", exc)
             self._stop_event.wait(timeout=self._settings.HEARTBEAT_INTERVAL)
 
-    def _send_heartbeat(self, status: WorkerStatus = WorkerStatus.IDLE) -> None:
+    def _send_heartbeat(self, status=WorkerStatus.IDLE):
         heartbeat = HeartbeatPayload(
             worker_id=self._worker_id,
-            status=status,
+            status=status.value if hasattr(status, 'value') else status,
             current_task_id=self._current_task_id,
             uptime_seconds=round(self.uptime, 1),
         )
-        topic = f"worker/{self._worker_id}/heartbeat"
-        if self.publish(topic, heartbeat.model_dump_json(), qos=1):
+        topic = "worker/{}/heartbeat".format(self._worker_id)
+        if self.publish(topic, json.dumps(heartbeat.__dict__), qos=1):
             self.stats["heartbeats_sent"] += 1
 
     # ── Manual heartbeat (for CLI) ───────────────────────────
