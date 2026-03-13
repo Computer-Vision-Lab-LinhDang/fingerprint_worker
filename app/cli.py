@@ -29,7 +29,7 @@ def clear_screen():
     os.system("clear" if os.name != "nt" else "cls")
 
 
-def fmt_time(ts: float | None) -> str:
+def fmt_time(ts: float) -> str:
     if ts is None:
         return "—"
     return datetime.fromtimestamp(ts).strftime("%H:%M:%S")
