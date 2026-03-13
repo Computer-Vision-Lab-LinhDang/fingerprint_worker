@@ -7,7 +7,7 @@ Includes an **interactive CLI** for monitoring and testing MQTT communication.
 
 ## Prerequisites
 
-- Python 3.8+
+- Python 3.6
 - Mosquitto broker running on the orchestrator machine
 - Network access to the broker (LAN or Tailscale VPN)
 
