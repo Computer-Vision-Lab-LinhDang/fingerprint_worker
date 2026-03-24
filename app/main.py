@@ -5,7 +5,8 @@ import time
 from app.core.config import get_settings
 from app.mqtt.client import get_mqtt_client
 from app.mqtt.handlers import create_message_handler
-from app.cli import run_cli, clear_screen, C
+from app.cli.menu import run_cli
+from app.cli.colors import C, clear_screen
 
 # ── Logging config ───────────────────────────────────────────
 logging.basicConfig(
@@ -16,14 +17,14 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def main() -> None:
+def main():
     settings = get_settings()
     mqtt_client = get_mqtt_client()
 
     clear_screen()
-    print(f"\n  {C.CYAN}{C.BOLD}🚀 Fingerprint Worker starting...{C.RESET}")
-    print(f"  {C.DIM}Worker ID : {settings.WORKER_ID}{C.RESET}")
-    print(f"  {C.DIM}Broker    : {settings.MQTT_BROKER_HOST}:{settings.MQTT_BROKER_PORT}{C.RESET}")
+    print("\n  {}{}🚀 Fingerprint Worker starting...{}".format(C.CYAN, C.BOLD, C.RESET))
+    print("  {}Worker ID : {}{}".format(C.DIM, settings.WORKER_ID, C.RESET))
+    print("  {}Broker    : {}:{}{}".format(C.DIM, settings.MQTT_BROKER_HOST, settings.MQTT_BROKER_PORT, C.RESET))
     print()
 
     # 1. Set message handler
@@ -32,23 +33,23 @@ def main() -> None:
 
     # 2. Connect to MQTT broker
     try:
-        print(f"  {C.YELLOW}Connecting to MQTT broker...{C.RESET}")
+        print("  {}Connecting to MQTT broker...{}".format(C.YELLOW, C.RESET))
         mqtt_client.connect()
         time.sleep(2)  # wait for on_connect callback
 
         if mqtt_client.is_connected:
-            print(f"  {C.GREEN}✓ MQTT connected successfully!{C.RESET}")
+            print("  {}✓ MQTT connected successfully!{}".format(C.GREEN, C.RESET))
         else:
-            print(f"  {C.RED}✗ Could not connect to MQTT{C.RESET}")
-            print(f"  {C.DIM}Check MQTT_BROKER_HOST in .env{C.RESET}")
-            print(f"  {C.DIM}You can still enter CLI to try reconnect{C.RESET}")
+            print("  {}✗ Could not connect to MQTT{}".format(C.RED, C.RESET))
+            print("  {}Check MQTT_BROKER_HOST in .env{}".format(C.DIM, C.RESET))
+            print("  {}You can still enter CLI to try reconnect{}".format(C.DIM, C.RESET))
 
     except Exception as exc:
-        print(f"  {C.RED}✗ Connection error: {exc}{C.RESET}")
-        print(f"  {C.DIM}You can still enter CLI to try reconnect{C.RESET}")
+        print("  {}✗ Connection error: {}{}".format(C.RED, exc, C.RESET))
+        print("  {}You can still enter CLI to try reconnect{}".format(C.DIM, C.RESET))
 
     print()
-    input(f"  {C.DIM}Press Enter to open main menu...{C.RESET}")
+    input("  {}Press Enter to open main menu...{}".format(C.DIM, C.RESET))
 
     # 3. Run interactive CLI
     try:
@@ -56,12 +57,12 @@ def main() -> None:
     except KeyboardInterrupt:
         pass
     finally:
-        print(f"\n  {C.YELLOW}Shutting down worker...{C.RESET}")
+        print("\n  {}Shutting down worker...{}".format(C.YELLOW, C.RESET))
         try:
             mqtt_client.disconnect()
         except Exception:
             pass
-        print(f"  {C.GREEN}👋 Worker stopped.{C.RESET}\n")
+        print("  {}👋 Worker stopped.{}\n".format(C.GREEN, C.RESET))
 
 
 if __name__ == "__main__":
