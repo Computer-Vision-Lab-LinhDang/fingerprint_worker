@@ -133,6 +133,28 @@ class TensorRTInference(object):
             if progress_callback:
                 progress_callback("FP16 mode enabled (Jetson GPU acceleration)")
 
+        # Handle dynamic input shapes — add optimization profile
+        has_dynamic = False
+        profile = builder.create_optimization_profile()
+        for i in range(network.num_inputs):
+            inp = network.get_input(i)
+            shape = inp.shape
+            # Check if any dimension is dynamic (-1)
+            if any(d == -1 for d in shape):
+                has_dynamic = True
+                # Replace -1 with concrete values
+                min_shape = tuple(1 if d == -1 else d for d in shape)
+                opt_shape = tuple(1 if d == -1 else d for d in shape)
+                max_shape = tuple(8 if (d == -1 and idx == 0) else (1 if d == -1 else d)
+                                  for idx, d in enumerate(shape))
+                profile.set_shape(inp.name, min_shape, opt_shape, max_shape)
+                if progress_callback:
+                    progress_callback("Dynamic input '{}': shape {} -> opt {}".format(
+                        inp.name, tuple(shape), opt_shape))
+
+        if has_dynamic:
+            config.add_optimization_profile(profile)
+
         # Build engine
         engine = builder.build_engine(network, config)
         if engine is None:
