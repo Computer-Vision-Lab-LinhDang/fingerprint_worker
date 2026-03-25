@@ -10,7 +10,7 @@ Dependencies (pre-installed on JetPack):
   - tensorrt
   - pycuda
   - numpy
-  - Pillow
+  - cv2 (OpenCV)
 """
 
 import json
@@ -20,7 +20,7 @@ import time
 import glob
 
 import numpy as np
-from PIL import Image
+import cv2
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +40,10 @@ def preprocess_image(image_path, input_shape):
     Returns:
         numpy array ready for inference
     """
-    img = Image.open(image_path).convert("L")  # grayscale
+    # Read as grayscale
+    img = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
+    if img is None:
+        raise ValueError("Cannot read image: {}".format(image_path))
 
     # Get target H, W from model input shape
     if len(input_shape) == 4:
@@ -52,15 +55,15 @@ def preprocess_image(image_path, input_shape):
 
     # Handle dynamic dimensions (None or -1 or string)
     if not isinstance(target_h, int) or target_h <= 0:
-        target_h = img.size[1]  # keep original height
+        target_h = img.shape[0]
     if not isinstance(target_w, int) or target_w <= 0:
-        target_w = img.size[0]  # keep original width
+        target_w = img.shape[1]
 
     # Resize
-    img = img.resize((target_w, target_h), Image.BILINEAR)
+    img = cv2.resize(img, (target_w, target_h), interpolation=cv2.INTER_LINEAR)
 
-    # Convert to numpy and normalize to [0, 1]
-    arr = np.array(img, dtype=np.float32) / 255.0
+    # Convert to float32 and normalize to [0, 1]
+    arr = img.astype(np.float32) / 255.0
 
     # Reshape to (1, C, H, W)
     if len(input_shape) == 4:
