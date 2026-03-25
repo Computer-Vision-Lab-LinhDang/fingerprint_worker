@@ -224,28 +224,48 @@ class TensorRTInference(object):
         cudart.cudaFree.argtypes = [ctypes.c_void_p]
         cudart.cudaFree.restype = ctypes.c_int
 
+        cudart.cudaDeviceSynchronize.restype = ctypes.c_int
+
         # Ensure input is contiguous float32
         input_data = np.ascontiguousarray(input_data, dtype=np.float32)
-        output_data = np.empty(self.output_shape, dtype=np.float32)
+        output_data = np.zeros(self.output_shape, dtype=np.float32)
+
+        logger.info("Input stats: shape=%s, min=%.4f, max=%.4f, mean=%.4f",
+                     input_data.shape, input_data.min(), input_data.max(), input_data.mean())
 
         # Allocate GPU memory
         d_input = ctypes.c_void_p()
         d_output = ctypes.c_void_p()
-        cudart.cudaMalloc(ctypes.byref(d_input), input_data.nbytes)
-        cudart.cudaMalloc(ctypes.byref(d_output), output_data.nbytes)
+        err = cudart.cudaMalloc(ctypes.byref(d_input), input_data.nbytes)
+        logger.info("cudaMalloc input: err=%d, ptr=%s, size=%d", err, d_input.value, input_data.nbytes)
+        err = cudart.cudaMalloc(ctypes.byref(d_output), output_data.nbytes)
+        logger.info("cudaMalloc output: err=%d, ptr=%s, size=%d", err, d_output.value, output_data.nbytes)
 
         # Copy input to GPU (cudaMemcpyHostToDevice = 1)
         input_ptr = ctypes.c_void_p(input_data.ctypes.data)
-        cudart.cudaMemcpy(d_input, input_ptr, input_data.nbytes, 1)
+        err = cudart.cudaMemcpy(d_input, input_ptr, input_data.nbytes, 1)
+        logger.info("cudaMemcpy H2D: err=%d", err)
+
+        # Set binding shape for dynamic input
+        if any(d == -1 for d in self.engine.get_binding_shape(0)):
+            self.context.set_binding_shape(0, input_data.shape)
+            logger.info("Set binding shape to %s", input_data.shape)
 
         # Run inference (synchronous)
-        self.context.execute_v2(
+        success = self.context.execute_v2(
             bindings=[int(d_input.value), int(d_output.value)],
         )
+        logger.info("execute_v2 result: %s", success)
+
+        # Sync GPU
+        cudart.cudaDeviceSynchronize()
 
         # Copy output from GPU (cudaMemcpyDeviceToHost = 2)
         output_ptr = ctypes.c_void_p(output_data.ctypes.data)
-        cudart.cudaMemcpy(output_ptr, d_output, output_data.nbytes, 2)
+        err = cudart.cudaMemcpy(output_ptr, d_output, output_data.nbytes, 2)
+        logger.info("cudaMemcpy D2H: err=%d", err)
+        logger.info("Output stats: min=%.6f, max=%.6f, mean=%.6f",
+                     output_data.min(), output_data.max(), output_data.mean())
 
         # Free GPU memory
         cudart.cudaFree(d_input)
