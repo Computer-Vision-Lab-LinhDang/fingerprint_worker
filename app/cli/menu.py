@@ -13,6 +13,7 @@ from app.cli.commands import (
     show_config,
     reconnect,
     show_loaded_models,
+    test_model_inference,
 )
 
 
@@ -52,6 +53,7 @@ def print_menu():
     print("  {}[8]{}  🔄  Reconnect MQTT".format(C.BOLD, C.RESET))
     print("  {}[9]{}  🧹  Clear Screen".format(C.BOLD, C.RESET))
     print("  {}[10]{} 🧠  Loaded Models".format(C.BOLD, C.RESET))
+    print("  {}[11]{} 🚀  Test Model Inference".format(C.BOLD, C.RESET))
     print("  {}[0]{}  🚪  Exit".format(C.BOLD, C.RESET))
     print("  {}{}{}".format(C.YELLOW, "-" * 48, C.RESET))
 
@@ -72,12 +74,13 @@ def run_cli():
         "8": reconnect,
         "9": lambda: (clear_screen(), print_banner()),
         "10": show_loaded_models,
+        "11": test_model_inference,
     }
 
     while True:
         print_menu()
         try:
-            choice = input("\n  {}{}▸ Select [0-10]: {}".format(C.YELLOW, C.BOLD, C.RESET)).strip()
+            choice = input("\n  {}{}▸ Select [0-11]: {}".format(C.YELLOW, C.BOLD, C.RESET)).strip()
         except (KeyboardInterrupt, EOFError):
             choice = "0"
 

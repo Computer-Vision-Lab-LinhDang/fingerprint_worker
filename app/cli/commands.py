@@ -264,3 +264,128 @@ def show_loaded_models():
 
     print()
 
+
+# ── [11] Test Model Inference ───────────────────────────────
+def test_model_inference():
+    import os
+    import glob
+    from app.services.model_service import get_model_service
+
+    print("\n  {}{}=== TEST MODEL INFERENCE ==={}".format(C.CYAN, C.BOLD, C.RESET))
+
+    svc = get_model_service()
+    loaded = svc.loaded_models
+    local = svc.list_local_models()
+
+    if not local:
+        print("  {}✗ No models found on disk. Deploy a model first.{}".format(C.RED, C.RESET))
+        return
+
+    # 1. Select model
+    print("\n  {}Available models:{}".format(C.DIM, C.RESET))
+    for i, m in enumerate(local, 1):
+        size_mb = m["size_bytes"] / (1024 * 1024)
+        active = " {}● active{}".format(C.GREEN, C.RESET) if loaded.get(m["model_type"]) == m["model_name"] else ""
+        print("    {}[{}]{} {}/{} ({:.1f} MB){}".format(
+            C.BOLD, i, C.RESET,
+            m["model_type"], m["model_name"],
+            size_mb, active,
+        ))
+
+    try:
+        idx = int(input("\n  {}▸ Select model [1-{}]: {}".format(
+            C.YELLOW, len(local), C.RESET,
+        )).strip()) - 1
+        if idx < 0 or idx >= len(local):
+            print("  {}✗ Invalid selection{}".format(C.RED, C.RESET))
+            return
+    except (ValueError, EOFError):
+        print("  {}✗ Invalid input{}".format(C.RED, C.RESET))
+        return
+
+    selected = local[idx]
+    model_type = selected["model_type"]
+    model_name = selected["model_name"]
+
+    # 2. Check sample data
+    sample_dir = os.path.join(os.getcwd(), "data", "sample")
+    output_dir = os.path.join(os.getcwd(), "data", "sample_output")
+
+    if not os.path.exists(sample_dir):
+        print("  {}✗ Sample directory not found: {}{}".format(C.RED, sample_dir, C.RESET))
+        return
+
+    images = sorted(
+        glob.glob(os.path.join(sample_dir, "*.tif"))
+        + glob.glob(os.path.join(sample_dir, "*.png"))
+        + glob.glob(os.path.join(sample_dir, "*.jpg"))
+        + glob.glob(os.path.join(sample_dir, "*.bmp"))
+    )
+    if not images:
+        print("  {}✗ No images found in {}{}".format(C.RED, sample_dir, C.RESET))
+        return
+
+    print("\n  {}Model :{}  {}/{}".format(C.DIM, C.RESET, model_type, model_name))
+    print("  {}Input :{}  {} ({} images)".format(C.DIM, C.RESET, sample_dir, len(images)))
+    print("  {}Output:{}  {}".format(C.DIM, C.RESET, output_dir))
+    print()
+
+    # 3. Progress callback
+    def on_progress(msg):
+        if "ERROR" in msg or "error" in msg:
+            color = C.RED
+            icon = "✗"
+        elif "saved" in msg.lower() or "done" in msg.lower():
+            color = C.GREEN
+            icon = "✓"
+        elif "/" in msg and "[" in msg:
+            color = C.WHITE
+            icon = "▸"
+        else:
+            color = C.CYAN
+            icon = "•"
+        print("  {} {}{}{}".format(icon, color, msg, C.RESET))
+
+    # 4. Run inference
+    try:
+        from app.services.inference_service import run_sample_test
+
+        on_progress("Starting: {}/{} on {} images".format(model_type, model_name, len(images)))
+
+        results = run_sample_test(
+            model_type=model_type,
+            model_name=model_name,
+            sample_dir=sample_dir,
+            output_dir=output_dir,
+            progress_callback=on_progress,
+        )
+
+        # 5. Summary
+        success = sum(1 for r in results if "vector" in r)
+        failed = sum(1 for r in results if "error" in r)
+        avg_time = 0.0
+        if success > 0:
+            avg_time = sum(r.get("inference_time_ms", 0) for r in results if "vector" in r) / success
+
+        print("\n  {}{}=== RESULTS ==={}".format(C.GREEN, C.BOLD, C.RESET))
+        print("  ✓ {}{}/{}{} images processed".format(C.GREEN, success, len(results), C.RESET))
+        if failed:
+            print("  ✗ {}{}{} failed".format(C.RED, failed, C.RESET))
+        if success > 0:
+            dim = results[0].get("vector_dim", "?")
+            print("  {}Embedding dim:{} {}".format(C.DIM, C.RESET, dim))
+            print("  {}Avg inference :{} {:.1f} ms".format(C.DIM, C.RESET, avg_time))
+        print("  {}Output saved  :{} {}".format(C.DIM, C.RESET, os.path.join(output_dir, "results.json")))
+
+    except ImportError as exc:
+        print("  {}✗ Missing dependency: {}{}".format(C.RED, exc, C.RESET))
+        print("  {}On Jetson Nano, TensorRT comes with JetPack.{}".format(C.DIM, C.RESET))
+        print("  {}On PC, install: pip install onnxruntime{}".format(C.DIM, C.RESET))
+    except FileNotFoundError as exc:
+        print("  {}✗ {}{}".format(C.RED, exc, C.RESET))
+    except Exception as exc:
+        print("  {}✗ Inference failed: {}{}".format(C.RED, exc, C.RESET))
+        import traceback
+        traceback.print_exc()
+
+    print()
