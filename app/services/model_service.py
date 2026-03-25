@@ -55,11 +55,11 @@ class ModelService:
     def download_model(self, model_type, model_name, version, download_url):
         """
         Download a model file from presigned URL.
-        Saves to: models/{model_type}/{model_name}/model.onnx
+        Saves to: models/{model_type}/{model_name}  (e.g. models/embedding/embedding_v1.onnx)
         Returns (success, error_message).
         """
-        save_dir = os.path.join(MODEL_DIR, model_type, model_name)
-        save_path = os.path.join(save_dir, "model.onnx")
+        save_dir = os.path.join(MODEL_DIR, model_type)
+        save_path = os.path.join(save_dir, model_name)
 
         try:
             os.makedirs(save_dir, exist_ok=True)
@@ -105,7 +105,7 @@ class ModelService:
 
     # ── List local models ────────────────────────────────────
     def list_local_models(self):
-        """List all model files on disk."""
+        """List all .onnx model files on disk."""
         results = []
         if not os.path.exists(MODEL_DIR):
             return results
@@ -114,17 +114,14 @@ class ModelService:
             type_dir = os.path.join(MODEL_DIR, model_type)
             if not os.path.isdir(type_dir):
                 continue
-            for model_name in os.listdir(type_dir):
-                model_dir = os.path.join(type_dir, model_name)
-                if not os.path.isdir(model_dir):
-                    continue
-                onnx_path = os.path.join(model_dir, "model.onnx")
-                if os.path.exists(onnx_path):
-                    size = os.path.getsize(onnx_path)
+            for filename in os.listdir(type_dir):
+                filepath = os.path.join(type_dir, filename)
+                if os.path.isfile(filepath) and filename.endswith(".onnx"):
+                    size = os.path.getsize(filepath)
                     results.append({
                         "model_type": model_type,
-                        "model_name": model_name,
-                        "path": onnx_path,
+                        "model_name": filename,
+                        "path": filepath,
                         "size_bytes": size,
                     })
         return results

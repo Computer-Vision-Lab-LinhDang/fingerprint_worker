@@ -307,8 +307,8 @@ def run_sample_test(model_type, model_name, sample_dir, output_dir, progress_cal
 
     Returns: list of dicts [{filename, vector, inference_time_ms}, ...]
     """
-    # Find model
-    onnx_path = os.path.join(MODEL_DIR, model_type, model_name, "model.onnx")
+    # Find model (flat file: models/{type}/{name})
+    onnx_path = os.path.join(MODEL_DIR, model_type, model_name)
     if not os.path.exists(onnx_path):
         raise FileNotFoundError("Model not found: {}".format(onnx_path))
 
