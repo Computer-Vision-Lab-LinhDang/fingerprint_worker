@@ -172,15 +172,7 @@ class TensorRTInference(object):
 
     def load_engine(self, progress_callback=None):
         """Load TensorRT engine for inference."""
-        try:
-            import tensorrt as trt
-            import pycuda.driver as cuda
-            import pycuda.autoinit  # noqa: F401
-        except ImportError as e:
-            raise ImportError(
-                "Missing dependency: {}. "
-                "TensorRT and PyCUDA are pre-installed with JetPack.".format(e)
-            )
+        import tensorrt as trt
 
         if not os.path.exists(self.trt_path):
             self.build_engine(progress_callback)
@@ -195,14 +187,18 @@ class TensorRTInference(object):
             self.engine = runtime.deserialize_cuda_engine(f.read())
 
         self.context = self.engine.create_execution_context()
-        self._stream = cuda.Stream()
 
-        # Get input/output shapes
+        # Get input/output shapes (handle dynamic shapes)
         for i in range(self.engine.num_bindings):
-            shape = self.engine.get_binding_shape(i)
             if self.engine.binding_is_input(i):
+                shape = self.context.get_binding_shape(i)
+                # If still dynamic, set to optimization profile shape
+                if any(d == -1 for d in shape):
+                    shape = self.engine.get_profile_shape(0, i)[1]  # opt shape
+                    self.context.set_binding_shape(i, shape)
                 self.input_shape = tuple(shape)
             else:
+                shape = self.context.get_binding_shape(i)
                 self.output_shape = tuple(shape)
 
         if progress_callback:
@@ -211,30 +207,36 @@ class TensorRTInference(object):
             ))
 
     def infer(self, input_data):
-        """Run inference on preprocessed input. Returns output numpy array."""
-        import pycuda.driver as cuda
+        """Run inference using ctypes CUDA (no pycuda needed)."""
+        import ctypes
 
-        # Allocate device memory
-        d_input = cuda.mem_alloc(input_data.nbytes)
+        # Load CUDA runtime library
+        cudart = ctypes.cdll.LoadLibrary("libcudart.so")
+
+        # Ensure input is contiguous float32
+        input_data = np.ascontiguousarray(input_data, dtype=np.float32)
         output_data = np.empty(self.output_shape, dtype=np.float32)
-        d_output = cuda.mem_alloc(output_data.nbytes)
 
-        # Transfer input to GPU
-        cuda.memcpy_htod_async(d_input, input_data, self._stream)
+        # Allocate GPU memory
+        d_input = ctypes.c_void_p()
+        d_output = ctypes.c_void_p()
+        cudart.cudaMalloc(ctypes.byref(d_input), input_data.nbytes)
+        cudart.cudaMalloc(ctypes.byref(d_output), output_data.nbytes)
 
-        # Run inference
-        self.context.execute_async_v2(
-            bindings=[int(d_input), int(d_output)],
-            stream_handle=self._stream.handle,
+        # Copy input to GPU (cudaMemcpyHostToDevice = 1)
+        cudart.cudaMemcpy(d_input, input_data.ctypes.data, input_data.nbytes, 1)
+
+        # Run inference (synchronous)
+        self.context.execute_v2(
+            bindings=[int(d_input.value), int(d_output.value)],
         )
 
-        # Transfer output from GPU
-        cuda.memcpy_dtoh_async(output_data, d_output, self._stream)
-        self._stream.synchronize()
+        # Copy output from GPU (cudaMemcpyDeviceToHost = 2)
+        cudart.cudaMemcpy(output_data.ctypes.data, d_output, output_data.nbytes, 2)
 
-        # Free device memory
-        d_input.free()
-        d_output.free()
+        # Free GPU memory
+        cudart.cudaFree(d_input)
+        cudart.cudaFree(d_output)
 
         return output_data.flatten()
 
