@@ -4,9 +4,12 @@ paho-mqtt>=1.6.0
 # ── HTTP (model download) ───────────────────────────────────
 requests>=2.20.0
 
-# ── Inference ───────────────────────────────────────────────
-numpy
-Pillow
+# ── Inference (Jetson Nano / Python 3.6) ────────────────────
+# NOTE: On Jetson Nano, numpy/Pillow may already be system-installed.
+#       If pip fails, use: pip install --no-build-isolation numpy==1.19.4
+#       Or recreate venv with: python3 -m venv venv --system-site-packages
+numpy==1.19.4
+Pillow==8.3.2
 
 # ── Utilities ───────────────────────────────────────────────
 python-dotenv>=0.19.0
