@@ -136,6 +136,7 @@ class MQTTWorkerClient:
                 (f"task/{self._worker_id}/embed", 1),
                 (f"task/{self._worker_id}/match", 1),
                 (f"task/{self._worker_id}/message", 1),
+                (f"task/{self._worker_id}/model/update", 1),
             ]
             for topic, qos in topics:
                 client.subscribe(topic, qos=qos)
@@ -207,11 +208,19 @@ class MQTTWorkerClient:
             self._stop_event.wait(timeout=self._settings.HEARTBEAT_INTERVAL)
 
     def _send_heartbeat(self, status=WorkerStatus.IDLE):
+        # Get loaded models from model service
+        try:
+            from app.services.model_service import get_model_service
+            loaded_models = get_model_service().loaded_models
+        except Exception:
+            loaded_models = {}
+
         heartbeat = HeartbeatPayload(
             worker_id=self._worker_id,
             status=status.value if hasattr(status, 'value') else status,
             current_task_id=self._current_task_id,
             uptime_seconds=round(self.uptime, 1),
+            loaded_models=loaded_models,
         )
         topic = "worker/{}/heartbeat".format(self._worker_id)
         if self.publish(topic, json.dumps(heartbeat.__dict__), qos=1):

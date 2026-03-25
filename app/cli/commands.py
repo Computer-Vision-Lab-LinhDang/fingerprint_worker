@@ -229,3 +229,38 @@ def reconnect():
             print("  {}✗ Reconnection failed{}".format(C.RED, C.RESET))
     except Exception as exc:
         print("  {}✗ Error: {}{}".format(C.RED, exc, C.RESET))
+
+
+# ── [10] Loaded Models ──────────────────────────────────────
+def show_loaded_models():
+    from app.services.model_service import get_model_service
+
+    print("\n  {}{}=== LOADED MODELS ==={}".format(C.CYAN, C.BOLD, C.RESET))
+
+    svc = get_model_service()
+
+    # 1. Show live model state (what heartbeat reports)
+    loaded = svc.loaded_models
+    print("\n  {}Active models (reported in heartbeat):{}".format(C.DIM, C.RESET))
+    if loaded:
+        for mtype, mname in loaded.items():
+            print("    {}●{} {}: {}{}{}".format(C.GREEN, C.RESET, mtype, C.MAGENTA, mname, C.RESET))
+    else:
+        print("    {}(none — no models loaded yet){}".format(C.DIM, C.RESET))
+
+    # 2. Show all model files on disk
+    local = svc.list_local_models()
+    print("\n  {}Model files on disk:{}".format(C.DIM, C.RESET))
+    if local:
+        for m in local:
+            size_mb = m["size_bytes"] / (1024 * 1024)
+            print("    📦 {}/{} {}({:.1f} MB){} → {}".format(
+                m["model_type"], m["model_name"],
+                C.DIM, size_mb, C.RESET,
+                m["path"],
+            ))
+    else:
+        print("    {}(no .onnx files found in models/ directory){}".format(C.DIM, C.RESET))
+
+    print()
+

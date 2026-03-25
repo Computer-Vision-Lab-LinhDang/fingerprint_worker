@@ -1,10 +1,11 @@
 
 import json
 import logging
+import threading
 
 import paho.mqtt.client as mqtt
 
-from app.schemas.payload import TaskPayload, MatchPayload
+from app.schemas.payload import TaskPayload, MatchPayload, ModelUpdatePayload, ModelStatusPayload
 
 logger = logging.getLogger(__name__)
 
@@ -16,8 +17,25 @@ def create_message_handler(mqtt_client_ref):
 
         try:
             if len(parts) >= 3 and parts[0] == "task":
-                task_type = parts[2]
                 data = json.loads(message.payload.decode())
+
+                # task/{worker_id}/model/update
+                if len(parts) >= 4 and parts[2] == "model" and parts[3] == "update":
+                    payload = ModelUpdatePayload(**data)
+                    logger.info(
+                        "📥 MODEL UPDATE: type=%s, name=%s, ver=%s",
+                        payload.model_type, payload.model_name, payload.version,
+                    )
+                    # Run download in background thread to not block MQTT
+                    thread = threading.Thread(
+                        target=_handle_model_update,
+                        args=(mqtt_client_ref, payload),
+                        daemon=True,
+                    )
+                    thread.start()
+                    return
+
+                task_type = parts[2]
 
                 if task_type == "embed":
                     payload = TaskPayload(**data)
@@ -58,3 +76,50 @@ def create_message_handler(mqtt_client_ref):
             logger.error("Error processing message '%s': %s", topic, exc)
 
     return on_message
+
+
+def _handle_model_update(mqtt_client_ref, payload):
+    """Handle model download in background thread."""
+    from app.services.model_service import get_model_service
+
+    worker_id = mqtt_client_ref.worker_id
+    model_service = get_model_service()
+
+    # Publish: downloading
+    _publish_model_status(
+        mqtt_client_ref, worker_id, payload, "downloading",
+    )
+
+    # Download
+    success, error = model_service.download_model(
+        model_type=payload.model_type,
+        model_name=payload.model_name,
+        version=payload.version,
+        download_url=payload.download_url,
+    )
+
+    # Publish: ready or failed
+    status = "ready" if success else "failed"
+    _publish_model_status(
+        mqtt_client_ref, worker_id, payload, status, error,
+    )
+
+
+def _publish_model_status(mqtt_client_ref, worker_id, payload, status, error=None):
+    """Publish model status to orchestrator."""
+    status_payload = ModelStatusPayload(
+        worker_id=worker_id,
+        model_type=payload.model_type,
+        model_name=payload.model_name,
+        version=payload.version,
+        status=status,
+        error=error,
+    )
+    topic = "worker/{}/model/status".format(worker_id)
+    mqtt_client_ref.publish(
+        topic, json.dumps(status_payload.__dict__), qos=1,
+    )
+    logger.info(
+        "📤 Model status: %s/%s → %s",
+        payload.model_type, payload.model_name, status,
+    )
