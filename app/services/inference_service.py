@@ -213,6 +213,17 @@ class TensorRTInference(object):
         # Load CUDA runtime library
         cudart = ctypes.cdll.LoadLibrary("libcudart.so")
 
+        # Set proper argtypes for CUDA functions
+        cudart.cudaMalloc.argtypes = [ctypes.POINTER(ctypes.c_void_p), ctypes.c_size_t]
+        cudart.cudaMalloc.restype = ctypes.c_int
+
+        cudart.cudaMemcpy.argtypes = [ctypes.c_void_p, ctypes.c_void_p,
+                                       ctypes.c_size_t, ctypes.c_int]
+        cudart.cudaMemcpy.restype = ctypes.c_int
+
+        cudart.cudaFree.argtypes = [ctypes.c_void_p]
+        cudart.cudaFree.restype = ctypes.c_int
+
         # Ensure input is contiguous float32
         input_data = np.ascontiguousarray(input_data, dtype=np.float32)
         output_data = np.empty(self.output_shape, dtype=np.float32)
@@ -224,7 +235,8 @@ class TensorRTInference(object):
         cudart.cudaMalloc(ctypes.byref(d_output), output_data.nbytes)
 
         # Copy input to GPU (cudaMemcpyHostToDevice = 1)
-        cudart.cudaMemcpy(d_input, input_data.ctypes.data, input_data.nbytes, 1)
+        input_ptr = ctypes.c_void_p(input_data.ctypes.data)
+        cudart.cudaMemcpy(d_input, input_ptr, input_data.nbytes, 1)
 
         # Run inference (synchronous)
         self.context.execute_v2(
@@ -232,7 +244,8 @@ class TensorRTInference(object):
         )
 
         # Copy output from GPU (cudaMemcpyDeviceToHost = 2)
-        cudart.cudaMemcpy(output_data.ctypes.data, d_output, output_data.nbytes, 2)
+        output_ptr = ctypes.c_void_p(output_data.ctypes.data)
+        cudart.cudaMemcpy(output_ptr, d_output, output_data.nbytes, 2)
 
         # Free GPU memory
         cudart.cudaFree(d_input)
