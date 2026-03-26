@@ -1,16 +1,17 @@
 """
-Inference service — ONNX to TensorRT conversion and embedding inference.
+Inference service — run fingerprint embedding models.
 
-This service handles:
-1. Converting ONNX models to TensorRT engines for Jetson Nano
-2. Running inference on fingerprint images
-3. Returning embedding vectors
+Based on teammate's FingerEngine pattern (jetson_nano/inference.py).
 
-Dependencies (pre-installed on JetPack):
-  - tensorrt
-  - pycuda
-  - numpy
-  - cv2 (OpenCV)
+Runtime priority:
+  1. ONNX Runtime (works everywhere, most compatible)
+  2. TensorRT + PyCUDA (Jetson Nano GPU, optional)
+  3. Mock engine (development/testing)
+
+Dependencies:
+  - numpy, cv2 (pre-installed on JetPack)
+  - onnxruntime (pip install onnxruntime)
+  - tensorrt + pycuda (optional, JetPack pre-installed)
 """
 
 import json
@@ -24,261 +25,54 @@ import cv2
 
 logger = logging.getLogger(__name__)
 
-# Model directory
+# ── Constants ───────────────────────────────────────────────
 MODEL_DIR = os.path.join(os.getcwd(), "models")
+
+# Model input configuration (DeepPrint)
+INPUT_SIZE = (299, 299)  # (W, H)
+INPUT_CHANNELS = 1       # grayscale
 
 
 # ── Image Preprocessing ─────────────────────────────────────
-def preprocess_image(image_path, input_shape):
-    """
-    Load and preprocess a fingerprint image for inference.
-
-    Args:
-        image_path: path to .tif image
-        input_shape: model input shape, e.g. [1, 1, 96, 96]
-
-    Returns:
-        numpy array ready for inference
-    """
-    # Read as grayscale
+def preprocess_from_file(image_path, input_size=INPUT_SIZE):
+    """Load image from file path and preprocess for model input."""
     img = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
     if img is None:
         raise ValueError("Cannot read image: {}".format(image_path))
-
-    # Get target H, W from model input shape
-    if len(input_shape) == 4:
-        _, channels, target_h, target_w = input_shape
-    elif len(input_shape) == 3:
-        channels, target_h, target_w = input_shape
-    else:
-        raise ValueError("Unexpected input shape: {}".format(input_shape))
-
-    # Handle dynamic dimensions (None or -1 or string)
-    if not isinstance(target_h, int) or target_h <= 0:
-        target_h = img.shape[0]
-    if not isinstance(target_w, int) or target_w <= 0:
-        target_w = img.shape[1]
-
-    # Resize
-    img = cv2.resize(img, (target_w, target_h), interpolation=cv2.INTER_LINEAR)
-
-    # Convert to float32 and normalize to [0, 1]
-    arr = img.astype(np.float32) / 255.0
-
-    # Reshape to (1, C, H, W)
-    if len(input_shape) == 4:
-        arr = arr.reshape(1, 1, target_h, target_w)
-    else:
-        arr = arr.reshape(1, target_h, target_w)
-
-    return arr
+    return _preprocess(img, input_size)
 
 
-# ── TensorRT Engine ─────────────────────────────────────────
-class TensorRTInference(object):
-    """Run inference using TensorRT engine."""
+def preprocess_from_bytes(image_bytes, input_size=INPUT_SIZE):
+    """Decode image bytes and preprocess for model input."""
+    nparr = np.frombuffer(image_bytes, np.uint8)
+    img = cv2.imdecode(nparr, cv2.IMREAD_UNCHANGED)
+    if img is None:
+        raise ValueError("Failed to decode image bytes")
 
-    def __init__(self, onnx_path):
-        self.onnx_path = onnx_path
-        self.trt_path = onnx_path.replace(".onnx", ".trt")
-        self.engine = None
-        self.context = None
-        self.input_shape = None
-        self.output_shape = None
-        self._stream = None
+    # Convert to grayscale if needed
+    if len(img.shape) == 3 and img.shape[2] == 3:
+        img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    elif len(img.shape) == 3 and img.shape[2] == 4:
+        img = cv2.cvtColor(img, cv2.COLOR_BGRA2GRAY)
 
-    def build_engine(self, progress_callback=None):
-        """Convert ONNX to TensorRT engine."""
-        try:
-            import tensorrt as trt
-        except ImportError:
-            raise ImportError(
-                "TensorRT is not installed. "
-                "On Jetson Nano, it comes pre-installed with JetPack SDK."
-            )
-
-        if os.path.exists(self.trt_path):
-            logger.info("TensorRT engine already exists: %s", self.trt_path)
-            if progress_callback:
-                progress_callback("TensorRT engine found (cached)")
-            return self.trt_path
-
-        if progress_callback:
-            progress_callback("Converting ONNX -> TensorRT (this may take a few minutes)...")
-
-        TRT_LOGGER = trt.Logger(trt.Logger.WARNING)
-
-        builder = trt.Builder(TRT_LOGGER)
-        network_flags = 1 << int(trt.NetworkDefinitionCreationFlag.EXPLICIT_BATCH)
-        network = builder.create_network(network_flags)
-        parser = trt.OnnxParser(network, TRT_LOGGER)
-
-        # Parse ONNX
-        with open(self.onnx_path, "rb") as f:
-            if not parser.parse(f.read()):
-                for i in range(parser.num_errors):
-                    logger.error("ONNX parse error: %s", parser.get_error(i))
-                raise RuntimeError("Failed to parse ONNX model")
-
-        if progress_callback:
-            progress_callback("ONNX parsed, building TensorRT engine...")
-
-        # Build config
-        config = builder.create_builder_config()
-        config.max_workspace_size = 1 << 28  # 256 MB
-
-        # NOTE: FP16 disabled — causes CuTensor errors with MatMul-heavy models
-        # on Jetson Nano. Using FP32 for compatibility.
-        # To re-enable: uncomment the lines below
-        # if builder.platform_has_fast_fp16:
-        #     config.set_flag(trt.BuilderFlag.FP16)
-        if progress_callback:
-            progress_callback("Using FP32 precision (compatible mode)")
-
-        # Handle dynamic input shapes — add optimization profile
-        has_dynamic = False
-        profile = builder.create_optimization_profile()
-        for i in range(network.num_inputs):
-            inp = network.get_input(i)
-            shape = inp.shape
-            # Check if any dimension is dynamic (-1)
-            if any(d == -1 for d in shape):
-                has_dynamic = True
-                # Replace -1 with concrete values
-                min_shape = tuple(1 if d == -1 else d for d in shape)
-                opt_shape = tuple(1 if d == -1 else d for d in shape)
-                max_shape = tuple(8 if (d == -1 and idx == 0) else (1 if d == -1 else d)
-                                  for idx, d in enumerate(shape))
-                profile.set_shape(inp.name, min_shape, opt_shape, max_shape)
-                if progress_callback:
-                    progress_callback("Dynamic input '{}': shape {} -> opt {}".format(
-                        inp.name, tuple(shape), opt_shape))
-
-        if has_dynamic:
-            config.add_optimization_profile(profile)
-
-        # Build engine
-        engine = builder.build_engine(network, config)
-        if engine is None:
-            raise RuntimeError("Failed to build TensorRT engine")
-
-        # Save engine
-        with open(self.trt_path, "wb") as f:
-            f.write(engine.serialize())
-
-        logger.info("TensorRT engine saved: %s", self.trt_path)
-        if progress_callback:
-            progress_callback("TensorRT engine built and saved")
-
-        return self.trt_path
-
-    def load_engine(self, progress_callback=None):
-        """Load TensorRT engine for inference."""
-        import tensorrt as trt
-
-        if not os.path.exists(self.trt_path):
-            self.build_engine(progress_callback)
-
-        if progress_callback:
-            progress_callback("Loading TensorRT engine...")
-
-        TRT_LOGGER = trt.Logger(trt.Logger.WARNING)
-        runtime = trt.Runtime(TRT_LOGGER)
-
-        with open(self.trt_path, "rb") as f:
-            self.engine = runtime.deserialize_cuda_engine(f.read())
-
-        self.context = self.engine.create_execution_context()
-
-        # Get input/output shapes (handle dynamic shapes)
-        for i in range(self.engine.num_bindings):
-            if self.engine.binding_is_input(i):
-                shape = self.context.get_binding_shape(i)
-                # If still dynamic, set to optimization profile shape
-                if any(d == -1 for d in shape):
-                    shape = self.engine.get_profile_shape(0, i)[1]  # opt shape
-                    self.context.set_binding_shape(i, shape)
-                self.input_shape = tuple(shape)
-            else:
-                shape = self.context.get_binding_shape(i)
-                self.output_shape = tuple(shape)
-
-        if progress_callback:
-            progress_callback("Engine loaded | input: {} | output: {}".format(
-                self.input_shape, self.output_shape,
-            ))
-
-    def infer(self, input_data):
-        """Run inference using ctypes CUDA (no pycuda needed)."""
-        import ctypes
-
-        # Load CUDA runtime library
-        cudart = ctypes.cdll.LoadLibrary("libcudart.so")
-
-        # Set proper argtypes for CUDA functions
-        cudart.cudaMalloc.argtypes = [ctypes.POINTER(ctypes.c_void_p), ctypes.c_size_t]
-        cudart.cudaMalloc.restype = ctypes.c_int
-
-        cudart.cudaMemcpy.argtypes = [ctypes.c_void_p, ctypes.c_void_p,
-                                       ctypes.c_size_t, ctypes.c_int]
-        cudart.cudaMemcpy.restype = ctypes.c_int
-
-        cudart.cudaFree.argtypes = [ctypes.c_void_p]
-        cudart.cudaFree.restype = ctypes.c_int
-
-        cudart.cudaDeviceSynchronize.restype = ctypes.c_int
-
-        # Ensure input is contiguous float32
-        input_data = np.ascontiguousarray(input_data, dtype=np.float32)
-        output_data = np.zeros(self.output_shape, dtype=np.float32)
-
-        logger.info("Input stats: shape=%s, min=%.4f, max=%.4f, mean=%.4f",
-                     input_data.shape, input_data.min(), input_data.max(), input_data.mean())
-
-        # Allocate GPU memory
-        d_input = ctypes.c_void_p()
-        d_output = ctypes.c_void_p()
-        err = cudart.cudaMalloc(ctypes.byref(d_input), input_data.nbytes)
-        logger.info("cudaMalloc input: err=%d, ptr=%s, size=%d", err, d_input.value, input_data.nbytes)
-        err = cudart.cudaMalloc(ctypes.byref(d_output), output_data.nbytes)
-        logger.info("cudaMalloc output: err=%d, ptr=%s, size=%d", err, d_output.value, output_data.nbytes)
-
-        # Copy input to GPU (cudaMemcpyHostToDevice = 1)
-        input_ptr = ctypes.c_void_p(input_data.ctypes.data)
-        err = cudart.cudaMemcpy(d_input, input_ptr, input_data.nbytes, 1)
-        logger.info("cudaMemcpy H2D: err=%d", err)
-
-        # Set binding shape for dynamic input
-        if any(d == -1 for d in self.engine.get_binding_shape(0)):
-            self.context.set_binding_shape(0, input_data.shape)
-            logger.info("Set binding shape to %s", input_data.shape)
-
-        # Run inference (synchronous)
-        success = self.context.execute_v2(
-            bindings=[int(d_input.value), int(d_output.value)],
-        )
-        logger.info("execute_v2 result: %s", success)
-
-        # Sync GPU
-        cudart.cudaDeviceSynchronize()
-
-        # Copy output from GPU (cudaMemcpyDeviceToHost = 2)
-        output_ptr = ctypes.c_void_p(output_data.ctypes.data)
-        err = cudart.cudaMemcpy(output_ptr, d_output, output_data.nbytes, 2)
-        logger.info("cudaMemcpy D2H: err=%d", err)
-        logger.info("Output stats: min=%.6f, max=%.6f, mean=%.6f",
-                     output_data.min(), output_data.max(), output_data.mean())
-
-        # Free GPU memory
-        cudart.cudaFree(d_input)
-        cudart.cudaFree(d_output)
-
-        return output_data.flatten()
+    return _preprocess(img, input_size)
 
 
-# ── ONNX Runtime Fallback (for x86 / no TensorRT) ──────────
+def _preprocess(img_gray, input_size):
+    """
+    Core preprocessing: resize, normalize, reshape.
+    Input: (H, W) uint8 grayscale
+    Output: (1, 1, H, W) float32 normalized to [0, 1]
+    """
+    img = cv2.resize(img_gray, input_size, interpolation=cv2.INTER_LINEAR)
+    img = img.astype(np.float32) / 255.0
+    img = np.expand_dims(img, axis=(0, 1))  # (1, 1, H, W)
+    return img
+
+
+# ── ONNX Runtime Inference (Primary) ────────────────────────
 class ONNXInference(object):
-    """Fallback: run inference using ONNX Runtime (CPU/GPU)."""
+    """Primary runtime — ONNX Runtime with GPU/CPU providers."""
 
     def __init__(self, onnx_path):
         self.onnx_path = onnx_path
@@ -286,21 +80,25 @@ class ONNXInference(object):
         self.input_name = None
         self.input_shape = None
         self.output_shape = None
+        self.backend = "onnx"
 
-    def load_engine(self, progress_callback=None):
-        """Load ONNX model."""
-        try:
-            import onnxruntime as ort
-        except ImportError:
-            raise ImportError(
-                "Neither TensorRT nor ONNX Runtime is installed. "
-                "Install onnxruntime: pip install onnxruntime"
-            )
+    def load(self, progress_callback=None):
+        """Load ONNX model with best available provider."""
+        import onnxruntime as ort
+
+        available = ort.get_available_providers()
+        if progress_callback:
+            progress_callback("Available providers: {}".format(available))
+
+        providers = []
+        if 'CUDAExecutionProvider' in available:
+            providers.append('CUDAExecutionProvider')
+        providers.append('CPUExecutionProvider')
 
         if progress_callback:
-            progress_callback("Loading ONNX model with ONNX Runtime...")
+            progress_callback("Loading ONNX model with {}...".format(providers[0]))
 
-        self.session = ort.InferenceSession(self.onnx_path)
+        self.session = ort.InferenceSession(self.onnx_path, providers=providers)
 
         inp = self.session.get_inputs()[0]
         out = self.session.get_outputs()[0]
@@ -308,65 +106,191 @@ class ONNXInference(object):
         self.input_shape = inp.shape
         self.output_shape = out.shape
 
-        # Replace dynamic dims with defaults
-        resolved = []
-        for d in self.input_shape:
-            if isinstance(d, int) and d > 0:
-                resolved.append(d)
-            else:
-                resolved.append(1)  # batch dim default
-        self.input_shape = tuple(resolved)
-
         if progress_callback:
             progress_callback("Model loaded | input: {} | output: {}".format(
-                self.input_shape, self.output_shape,
-            ))
+                self.input_shape, self.output_shape))
 
-    def build_engine(self, progress_callback=None):
-        """No-op for ONNX Runtime."""
+    def infer(self, preprocessed):
+        """Run inference. Returns raw output array."""
+        outputs = self.session.run(None, {self.input_name: preprocessed})
+        return outputs[0].astype(np.float32)
+
+
+# ── TensorRT Inference (Optional, needs pycuda) ─────────────
+class TensorRTInference(object):
+    """
+    Optional GPU runtime — TensorRT + PyCUDA.
+    Requires pre-converted .trt engine file.
+    Based on teammate's working pattern with page-locked memory.
+    """
+
+    def __init__(self, trt_path):
+        self.trt_path = trt_path
+        self.engine = None
+        self.context = None
+        self._inputs = []
+        self._outputs = []
+        self._bindings = []
+        self._stream = None
+        self.backend = "trt"
+
+    def load(self, progress_callback=None):
+        """Load TensorRT engine with PyCUDA buffers."""
+        import tensorrt as trt
+        import pycuda.driver as cuda
+        import pycuda.autoinit  # noqa: F401
+
         if progress_callback:
-            progress_callback("Using ONNX Runtime (no TensorRT conversion needed)")
+            progress_callback("Loading TensorRT engine...")
 
-    def infer(self, input_data):
-        """Run inference."""
-        result = self.session.run(None, {self.input_name: input_data})
-        return result[0].flatten()
+        trt_logger = trt.Logger(trt.Logger.WARNING)
+        with open(self.trt_path, "rb") as f:
+            runtime = trt.Runtime(trt_logger)
+            self.engine = runtime.deserialize_cuda_engine(f.read())
+
+        self.context = self.engine.create_execution_context()
+
+        # Allocate page-locked host memory + device memory
+        self._inputs = []
+        self._outputs = []
+        self._bindings = []
+        self._stream = cuda.Stream()
+
+        for binding in self.engine:
+            shape = self.engine.get_binding_shape(binding)
+            size = trt.volume(shape)
+            dtype = trt.nptype(self.engine.get_binding_dtype(binding))
+            host_mem = cuda.pagelocked_empty(size, dtype)
+            device_mem = cuda.mem_alloc(host_mem.nbytes)
+            self._bindings.append(int(device_mem))
+            if self.engine.binding_is_input(binding):
+                self._inputs.append({"host": host_mem, "device": device_mem})
+            else:
+                self._outputs.append({"host": host_mem, "device": device_mem})
+
+        if progress_callback:
+            progress_callback("TensorRT engine loaded with PyCUDA buffers")
+
+    def infer(self, preprocessed):
+        """Run inference with TensorRT. Returns raw output array."""
+        import pycuda.driver as cuda
+
+        # Copy input to page-locked host buffer
+        np.copyto(self._inputs[0]["host"], preprocessed.ravel())
+
+        # Transfer to GPU
+        for inp in self._inputs:
+            cuda.memcpy_htod_async(inp["device"], inp["host"], self._stream)
+
+        # Execute
+        self.context.execute_async_v2(
+            bindings=self._bindings,
+            stream_handle=self._stream.handle,
+        )
+
+        # Transfer outputs back
+        for out in self._outputs:
+            cuda.memcpy_dtoh_async(out["host"], out["device"], self._stream)
+
+        self._stream.synchronize()
+
+        return self._outputs[0]["host"].astype(np.float32)
+
+
+# ── Mock Inference (Development) ────────────────────────────
+class MockInference(object):
+    """Mock engine for development/testing without a real model."""
+
+    def __init__(self, embedding_dim=192):
+        self.embedding_dim = embedding_dim
+        self.backend = "mock"
+
+    def load(self, progress_callback=None):
+        if progress_callback:
+            progress_callback("Using MOCK engine (random embeddings for testing)")
+
+    def infer(self, preprocessed):
+        np.random.seed(int(np.sum(preprocessed * 1000) % (2**31)))
+        return np.random.randn(self.embedding_dim).astype(np.float32)
+
+
+# ── Embedding Utilities ─────────────────────────────────────
+def normalize_embedding(embedding):
+    """L2-normalize embedding to unit length (required for cosine similarity)."""
+    flat = embedding.flatten()
+    norm = np.linalg.norm(flat)
+    if norm > 1e-10:
+        flat = flat / norm
+    return flat
+
+
+def compress_embedding(embedding):
+    """
+    Compress float32 embedding to 8-bit integers + scaling params.
+    Returns: (bytes, min, max)
+    """
+    emb_min = float(embedding.min())
+    emb_max = float(embedding.max())
+    emb_range = emb_max - emb_min
+    if emb_range < 1e-10:
+        emb_range = 1.0
+    quantized = ((embedding - emb_min) / emb_range * 255.0).astype(np.uint8)
+    return quantized.tobytes(), emb_min, emb_max
+
+
+def decompress_embedding(compressed_bytes, emb_min, emb_max):
+    """Decompress 8-bit bytes back to float32 embedding, re-normalized."""
+    quantized = np.frombuffer(compressed_bytes, dtype=np.uint8).astype(np.float32)
+    emb_range = emb_max - emb_min
+    if emb_range < 1e-10:
+        emb_range = 1.0
+    embedding = quantized / 255.0 * emb_range + emb_min
+    return normalize_embedding(embedding)
 
 
 # ── Factory — auto-select best runtime ──────────────────────
 def create_inference_engine(onnx_path):
     """
     Create the best available inference engine.
-    Prefers TensorRT (Jetson Nano), falls back to ONNX Runtime.
+    Priority: ONNX Runtime > TensorRT > Mock.
     """
+    # 1. Try ONNX Runtime (most compatible)
     try:
-        import tensorrt  # noqa: F401
-        logger.info("TensorRT available — using GPU acceleration")
-        return TensorRTInference(onnx_path)
-    except ImportError:
-        pass
-
-    try:
-        import onnxruntime  # noqa: F401
-        logger.info("Using ONNX Runtime fallback")
+        import onnxruntime as ort
+        providers = ort.get_available_providers()
+        if 'CUDAExecutionProvider' in providers:
+            logger.info("ONNX Runtime available with CUDA GPU acceleration")
+        else:
+            logger.info("ONNX Runtime available (CPU mode)")
         return ONNXInference(onnx_path)
     except ImportError:
-        pass
+        logger.warning("ONNX Runtime not available")
 
-    raise ImportError(
-        "No inference runtime found. Install TensorRT (Jetson) or onnxruntime."
-    )
+    # 2. Try TensorRT + PyCUDA (needs pre-converted .trt file)
+    trt_path = onnx_path.replace(".onnx", ".trt")
+    if os.path.exists(trt_path):
+        try:
+            import tensorrt  # noqa: F401
+            import pycuda     # noqa: F401
+            logger.info("TensorRT + PyCUDA available")
+            return TensorRTInference(trt_path)
+        except ImportError:
+            logger.warning("TensorRT or PyCUDA not available")
+
+    # 3. Fallback: Mock
+    logger.warning("No inference runtime found — using MOCK engine")
+    return MockInference()
 
 
 # ── Run test on sample data ────────────────────────────────
 def run_sample_test(model_type, model_name, sample_dir, output_dir, progress_callback=None):
     """
-    Run inference on all .tif images in sample_dir.
+    Run inference on all images in sample_dir.
     Saves results (embedding vectors) as JSON to output_dir.
 
     Returns: list of dicts [{filename, vector, inference_time_ms}, ...]
     """
-    # Find model (flat file: models/{type}/{name})
+    # Find model
     onnx_path = os.path.join(MODEL_DIR, model_type, model_name)
     if not os.path.exists(onnx_path):
         raise FileNotFoundError("Model not found: {}".format(onnx_path))
@@ -389,8 +313,7 @@ def run_sample_test(model_type, model_name, sample_dir, output_dir, progress_cal
         progress_callback("Initializing inference engine...")
 
     engine = create_inference_engine(onnx_path)
-    engine.build_engine(progress_callback)
-    engine.load_engine(progress_callback)
+    engine.load(progress_callback)
 
     if progress_callback:
         progress_callback("Starting inference on {} images...".format(len(images)))
@@ -407,17 +330,20 @@ def run_sample_test(model_type, model_name, sample_dir, output_dir, progress_cal
 
         try:
             # Preprocess
-            input_data = preprocess_image(img_path, engine.input_shape)
+            input_data = preprocess_from_file(img_path)
 
             # Inference
             t0 = time.time()
-            vector = engine.infer(input_data)
+            raw_output = engine.infer(input_data)
             elapsed_ms = (time.time() - t0) * 1000
+
+            # L2 normalize
+            embedding = normalize_embedding(raw_output)
 
             result = {
                 "filename": filename,
-                "vector": vector.tolist(),
-                "vector_dim": len(vector),
+                "vector": embedding.tolist(),
+                "vector_dim": len(embedding),
                 "inference_time_ms": round(elapsed_ms, 2),
             }
             results.append(result)
@@ -426,7 +352,7 @@ def run_sample_test(model_type, model_name, sample_dir, output_dir, progress_cal
                 progress_callback(
                     "[{}/{}] {} -> {}D vector ({:.1f}ms)".format(
                         idx + 1, len(images), filename,
-                        len(vector), elapsed_ms,
+                        len(embedding), elapsed_ms,
                     )
                 )
 
@@ -450,7 +376,7 @@ def run_sample_test(model_type, model_name, sample_dir, output_dir, progress_cal
             "model_type": model_type,
             "model_name": model_name,
             "onnx_path": onnx_path,
-            "runtime": engine.__class__.__name__,
+            "runtime": engine.backend,
             "total_images": len(images),
             "successful": sum(1 for r in results if "vector" in r),
             "failed": sum(1 for r in results if "error" in r),
