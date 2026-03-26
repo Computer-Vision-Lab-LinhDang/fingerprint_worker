@@ -127,11 +127,13 @@ class TensorRTInference(object):
         config = builder.create_builder_config()
         config.max_workspace_size = 1 << 28  # 256 MB
 
-        # Use FP16 if available (Jetson Nano supports FP16)
-        if builder.platform_has_fast_fp16:
-            config.set_flag(trt.BuilderFlag.FP16)
-            if progress_callback:
-                progress_callback("FP16 mode enabled (Jetson GPU acceleration)")
+        # NOTE: FP16 disabled — causes CuTensor errors with MatMul-heavy models
+        # on Jetson Nano. Using FP32 for compatibility.
+        # To re-enable: uncomment the lines below
+        # if builder.platform_has_fast_fp16:
+        #     config.set_flag(trt.BuilderFlag.FP16)
+        if progress_callback:
+            progress_callback("Using FP32 precision (compatible mode)")
 
         # Handle dynamic input shapes — add optimization profile
         has_dynamic = False
