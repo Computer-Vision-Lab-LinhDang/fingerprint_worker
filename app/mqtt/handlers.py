@@ -43,6 +43,19 @@ def create_message_handler(mqtt_client_ref):
                         "📥 EMBED task: id=%s, image_url=%s",
                         payload.task_id, payload.image_url[:60],
                     )
+                    # Mark busy
+                    mqtt_client_ref.current_task_id = payload.task_id
+
+                    # Run inference in background thread
+                    from app.services.task_service import TaskService
+                    task_svc = TaskService(mqtt_client_ref)
+                    thread = threading.Thread(
+                        target=_handle_embed_task,
+                        args=(task_svc, mqtt_client_ref, data),
+                        daemon=True,
+                    )
+                    thread.start()
+                    return
 
                 elif task_type == "match":
                     payload = MatchPayload(**data)
@@ -57,17 +70,10 @@ def create_message_handler(mqtt_client_ref):
                     logger.info(
                         "📩 MESSAGE from %s: %s", sender, content,
                     )
-                    print(f"\n  📩 Message from {sender}: {content}")
+                    print("\n  📩 Message from {}: {}".format(sender, content))
 
                 else:
                     logger.warning("Unknown task type: %s", task_type)
-
-                # Mark busy
-                mqtt_client_ref.current_task_id = data.get("task_id")
-
-                # TODO: Integrate model inference here when ready
-                # Currently just logs and resets state
-                mqtt_client_ref.current_task_id = None
 
             else:
                 logger.warning("Unknown topic: %s", topic)
@@ -76,6 +82,17 @@ def create_message_handler(mqtt_client_ref):
             logger.error("Error processing message '%s': %s", topic, exc)
 
     return on_message
+
+
+def _handle_embed_task(task_svc, mqtt_client_ref, task_data):
+    """Handle embed task in background thread — runs inference."""
+    try:
+        task_svc.process_embed(task_data)
+    except Exception as exc:
+        logger.error("Embed task failed: %s", exc)
+    finally:
+        # Reset to idle
+        mqtt_client_ref.current_task_id = None
 
 
 def _handle_model_update(mqtt_client_ref, payload):
