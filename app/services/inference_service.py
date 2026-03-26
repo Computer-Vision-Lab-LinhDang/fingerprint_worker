@@ -92,6 +92,8 @@ class ONNXInference(object):
             progress_callback("Available providers: {}".format(available))
 
         providers = []
+        if 'TensorrtExecutionProvider' in available:
+            providers.append('TensorrtExecutionProvider')
         if 'CUDAExecutionProvider' in available:
             providers.append('CUDAExecutionProvider')
         providers.append('CPUExecutionProvider')
@@ -249,13 +251,84 @@ def decompress_embedding(compressed_bytes, emb_min, emb_max):
     return normalize_embedding(embedding)
 
 
+# ── Convert ONNX → TensorRT using trtexec ──────────────────
+TRTEXEC_PATH = "/usr/src/tensorrt/bin/trtexec"
+
+
+def convert_onnx_to_trt(onnx_path, trt_path, fp16=True, progress_callback=None):
+    """
+    Convert ONNX model to TensorRT engine using trtexec (NVIDIA official tool).
+    Same approach as teammate's convert.sh script.
+    """
+    import subprocess
+
+    if os.path.exists(trt_path):
+        if progress_callback:
+            progress_callback("TensorRT engine found (cached): {}".format(
+                os.path.basename(trt_path)))
+        return True
+
+    if not os.path.exists(TRTEXEC_PATH):
+        logger.warning("trtexec not found at %s", TRTEXEC_PATH)
+        return False
+
+    if progress_callback:
+        progress_callback("Converting ONNX -> TensorRT with trtexec (may take minutes)...")
+
+    cmd = [
+        TRTEXEC_PATH,
+        "--onnx={}".format(onnx_path),
+        "--saveEngine={}".format(trt_path),
+    ]
+    if fp16:
+        cmd.append("--fp16")
+
+    logger.info("Running: %s", " ".join(cmd))
+
+    try:
+        result = subprocess.run(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            timeout=600,  # 10 min max
+        )
+        if result.returncode == 0:
+            if progress_callback:
+                progress_callback("TensorRT engine saved: {}".format(
+                    os.path.basename(trt_path)))
+            return True
+        else:
+            output = result.stdout.decode("utf-8", errors="replace")
+            logger.error("trtexec failed (code %d):\n%s", result.returncode, output[-500:])
+            if progress_callback:
+                progress_callback("trtexec conversion failed — falling back to ONNX Runtime")
+            return False
+    except Exception as exc:
+        logger.error("trtexec error: %s", exc)
+        return False
+
+
 # ── Factory — auto-select best runtime ──────────────────────
 def create_inference_engine(onnx_path):
     """
     Create the best available inference engine.
-    Priority: ONNX Runtime > TensorRT > Mock.
+    Priority: TensorRT (trtexec) > ONNX Runtime > Mock.
     """
-    # 1. Try ONNX Runtime (most compatible)
+    trt_path = onnx_path.replace(".onnx", ".trt")
+
+    # 1. Try TensorRT + PyCUDA (fastest)
+    try:
+        import tensorrt  # noqa: F401
+        import pycuda     # noqa: F401
+
+        # Auto-convert ONNX → .trt if needed (using trtexec like teammate)
+        if convert_onnx_to_trt(onnx_path, trt_path):
+            logger.info("TensorRT + PyCUDA — using GPU acceleration")
+            return TensorRTInference(trt_path)
+    except ImportError:
+        logger.warning("TensorRT or PyCUDA not available")
+
+    # 2. ONNX Runtime (fallback, more compatible)
     try:
         import onnxruntime as ort
         providers = ort.get_available_providers()
@@ -266,17 +339,6 @@ def create_inference_engine(onnx_path):
         return ONNXInference(onnx_path)
     except ImportError:
         logger.warning("ONNX Runtime not available")
-
-    # 2. Try TensorRT + PyCUDA (needs pre-converted .trt file)
-    trt_path = onnx_path.replace(".onnx", ".trt")
-    if os.path.exists(trt_path):
-        try:
-            import tensorrt  # noqa: F401
-            import pycuda     # noqa: F401
-            logger.info("TensorRT + PyCUDA available")
-            return TensorRTInference(trt_path)
-        except ImportError:
-            logger.warning("TensorRT or PyCUDA not available")
 
     # 3. Fallback: Mock
     logger.warning("No inference runtime found — using MOCK engine")
