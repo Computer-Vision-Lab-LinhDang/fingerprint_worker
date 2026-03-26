@@ -66,7 +66,8 @@ def _preprocess(img_gray, input_size):
     """
     img = cv2.resize(img_gray, input_size, interpolation=cv2.INTER_LINEAR)
     img = img.astype(np.float32) / 255.0
-    img = np.expand_dims(img, axis=(0, 1))  # (1, 1, H, W)
+    h, w = img.shape
+    img = img.reshape(1, 1, h, w)  # (1, 1, H, W)
     return img
 
 
