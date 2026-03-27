@@ -1,9 +1,8 @@
 """Individual CLI commands for the worker."""
 
-import json
 import time
-import uuid
-from datetime import datetime
+
+
 
 from app.core.config import get_settings
 from app.mqtt.client import get_mqtt_client
@@ -66,115 +65,7 @@ def send_heartbeat():
         print("  {}✗ Failed to send heartbeat{}".format(C.RED, C.RESET))
 
 
-# ── [3] Send Test Message ───────────────────────────────────
-def send_test_message():
-    client = get_mqtt_client()
-    settings = get_settings()
-
-    print("\n  {}{}=== SEND TEST MESSAGE ==={}\n".format(C.CYAN, C.BOLD, C.RESET))
-
-    if not client.is_connected:
-        print("  {}✗ Not connected to MQTT!{}".format(C.RED, C.RESET))
-        return
-
-    print("  Select message type:")
-    print("    [1] Publish to custom topic")
-    print("    [2] Send fake result (test orchestrator)")
-    print()
-
-    choice = input("  {}▸ Choose (1-2): {}".format(C.YELLOW, C.RESET)).strip()
-
-    if choice == "1":
-        topic = input("  {}▸ Topic: {}".format(C.YELLOW, C.RESET)).strip()
-        message = input("  {}▸ Message: {}".format(C.YELLOW, C.RESET)).strip()
-        if topic and message:
-            ok = client.publish(topic, message)
-            if ok:
-                print("  {}✓ Sent → {}{}".format(C.GREEN, topic, C.RESET))
-            else:
-                print("  {}✗ Send failed{}".format(C.RED, C.RESET))
-        else:
-            print("  {}✗ Topic and message cannot be empty{}".format(C.RED, C.RESET))
-
-    elif choice == "2":
-        task_id = input("  {}▸ Task ID (or Enter for random): {}".format(C.YELLOW, C.RESET)).strip()
-        if not task_id:
-            task_id = str(uuid.uuid4())
-
-        fake_result = {
-            "task_id": task_id,
-            "worker_id": settings.WORKER_ID,
-            "status": "completed",
-            "result": {"vector": [0.1, 0.2, 0.3], "model_name": "test"},
-            "processing_time_ms": 42.0,
-        }
-        payload = json.dumps(fake_result)
-        ok = client.publish_result(task_id, payload)
-        if ok:
-            print("  {}✓ Fake result sent → result/{}{}".format(C.GREEN, task_id, C.RESET))
-        else:
-            print("  {}✗ Send failed{}".format(C.RED, C.RESET))
-
-    else:
-        print("  {}Skipped.{}".format(C.DIM, C.RESET))
-
-
-# ── [4] Send Message to Orchestrator ────────────────────────
-def send_message_to_orchestrator():
-    client = get_mqtt_client()
-    settings = get_settings()
-
-    print("\n  {}{}=== SEND MESSAGE TO ORCHESTRATOR ==={}\n".format(C.CYAN, C.BOLD, C.RESET))
-
-    if not client.is_connected:
-        print("  {}✗ Not connected to MQTT!{}".format(C.RED, C.RESET))
-        return
-
-    message_text = input("  {}▸ Enter message: {}".format(C.YELLOW, C.RESET)).strip()
-    if not message_text:
-        print("  {}✗ Message cannot be empty{}".format(C.RED, C.RESET))
-        return
-
-    payload = json.dumps({
-        "worker_id": settings.WORKER_ID,
-        "message_id": str(uuid.uuid4()),
-        "content": message_text,
-        "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
-    })
-
-    topic = "worker/{}/message".format(settings.WORKER_ID)
-    ok = client.publish(topic, payload, qos=1)
-    if ok:
-        print("  {}✓ Message sent → {}{}".format(C.GREEN, topic, C.RESET))
-        print("  {}Content: {}{}".format(C.DIM, message_text, C.RESET))
-    else:
-        print("  {}✗ Send failed{}".format(C.RED, C.RESET))
-
-
-# ── [5] Message Log ─────────────────────────────────────────
-def show_message_log():
-    client = get_mqtt_client()
-
-    print("\n  {}{}=== RECENT MESSAGE LOG ==={}\n".format(C.CYAN, C.BOLD, C.RESET))
-
-    logs = client.message_log
-    if not logs:
-        print("  {}No messages yet.{}".format(C.DIM, C.RESET))
-        return
-
-    print("  {}{:<12} {:<35} {}{}".format(C.DIM, "Time", "Topic", "Payload", C.RESET))
-    print("  {}{}{}".format(C.DIM, "-" * 70, C.RESET))
-
-    for ts, topic, payload_preview in logs[-15:]:
-        t = datetime.fromtimestamp(ts).strftime("%H:%M:%S")
-        topic_short = topic if len(topic) <= 33 else "..." + topic[-30:]
-        payload_short = payload_preview[:40] + "..." if len(payload_preview) > 40 else payload_preview
-        print("  {}{:<12}{} {}{:<35}{} {}".format(C.WHITE, t, C.RESET, C.BLUE, topic_short, C.RESET, payload_short))
-
-    print("\n  {}Showing {}/{} most recent messages{}".format(C.DIM, min(15, len(logs)), len(logs), C.RESET))
-
-
-# ── [6] Statistics ───────────────────────────────────────────
+# ── [3] Statistics ───────────────────────────────────────────
 def show_stats():
     client = get_mqtt_client()
     stats = client.stats

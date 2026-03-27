@@ -6,9 +6,6 @@ from app.cli.colors import C, clear_screen, fmt_uptime
 from app.cli.commands import (
     show_connection_status,
     send_heartbeat,
-    send_test_message,
-    send_message_to_orchestrator,
-    show_message_log,
     show_stats,
     show_config,
     reconnect,
@@ -45,15 +42,12 @@ def print_menu():
     print("  {}{}{}".format(C.YELLOW, "-" * 48, C.RESET))
     print("  {}[1]{}  📊  Connection Status".format(C.BOLD, C.RESET))
     print("  {}[2]{}  💓  Send Heartbeat".format(C.BOLD, C.RESET))
-    print("  {}[3]{}  📨  Send Test Message".format(C.BOLD, C.RESET))
-    print("  {}[4]{}  ✉️   Send Message to Orchestrator".format(C.BOLD, C.RESET))
-    print("  {}[5]{}  📋  Recent Message Log".format(C.BOLD, C.RESET))
-    print("  {}[6]{}  📈  Statistics".format(C.BOLD, C.RESET))
-    print("  {}[7]{}  ⚙️   Current Configuration".format(C.BOLD, C.RESET))
-    print("  {}[8]{}  🔄  Reconnect MQTT".format(C.BOLD, C.RESET))
-    print("  {}[9]{}  🧹  Clear Screen".format(C.BOLD, C.RESET))
-    print("  {}[10]{} 🧠  Loaded Models".format(C.BOLD, C.RESET))
-    print("  {}[11]{} 🚀  Test Model Inference".format(C.BOLD, C.RESET))
+    print("  {}[3]{}  📈  Statistics".format(C.BOLD, C.RESET))
+    print("  {}[4]{}  ⚙️   Current Configuration".format(C.BOLD, C.RESET))
+    print("  {}[5]{}  🔄  Reconnect MQTT".format(C.BOLD, C.RESET))
+    print("  {}[6]{}  🧹  Clear Screen".format(C.BOLD, C.RESET))
+    print("  {}[7]{}  🧠  Loaded Models".format(C.BOLD, C.RESET))
+    print("  {}[8]{}  🚀  Test Model Inference".format(C.BOLD, C.RESET))
     print("  {}[0]{}  🚪  Exit".format(C.BOLD, C.RESET))
     print("  {}{}{}".format(C.YELLOW, "-" * 48, C.RESET))
 
@@ -66,21 +60,18 @@ def run_cli():
     actions = {
         "1": show_connection_status,
         "2": send_heartbeat,
-        "3": send_test_message,
-        "4": send_message_to_orchestrator,
-        "5": show_message_log,
-        "6": show_stats,
-        "7": show_config,
-        "8": reconnect,
-        "9": lambda: (clear_screen(), print_banner()),
-        "10": show_loaded_models,
-        "11": test_model_inference,
+        "3": show_stats,
+        "4": show_config,
+        "5": reconnect,
+        "6": lambda: (clear_screen(), print_banner()),
+        "7": show_loaded_models,
+        "8": test_model_inference,
     }
 
     while True:
         print_menu()
         try:
-            choice = input("\n  {}{}▸ Select [0-11]: {}".format(C.YELLOW, C.BOLD, C.RESET)).strip()
+            choice = input("\n  {}{}▸ Select [0-8]: {}".format(C.YELLOW, C.BOLD, C.RESET)).strip()
         except (KeyboardInterrupt, EOFError):
             choice = "0"
 
