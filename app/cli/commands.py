@@ -2,8 +2,6 @@
 
 import time
 
-
-
 from app.core.config import get_settings
 from app.mqtt.client import get_mqtt_client
 from app.schemas.payload import WorkerStatus

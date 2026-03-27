@@ -2,7 +2,7 @@ import json
 import logging
 import threading
 import time
-from typing import Optional, Callable, List, Tuple
+from typing import Optional, Callable
 
 import paho.mqtt.client as mqtt
 
@@ -25,12 +25,6 @@ class MQTTWorkerClient:
         self._message_handler: Optional[MessageHandler] = None
         self._current_task_id: Optional[str] = None
         self._start_time = time.time()
-
-        # Recent message log (for CLI display)
-        self._message_log: List[Tuple[float, str, str]] = []  # (timestamp, topic, payload_preview)
-        self._max_log = 50
-
-        # Stats
         self.stats = {
             "messages_received": 0,
             "messages_sent": 0,
@@ -40,7 +34,6 @@ class MQTTWorkerClient:
             "last_disconnected_at": None,
         }
 
-    # ── Properties ───────────────────────────────────────────
     @property
     def is_connected(self) -> bool:
         return self._connected
@@ -61,13 +54,7 @@ class MQTTWorkerClient:
     def uptime(self) -> float:
         return time.time() - self._start_time
 
-    @property
-    def message_log(self) -> List[Tuple[float, str, str]]:
-        return list(self._message_log)
-
-    # ── Connect ──────────────────────────────────────────────
     def connect(self) -> None:
-        # Support both paho-mqtt v1.x (Jetson Nano) and v2.x (PC)
         try:
             self._client = mqtt.Client(
                 callback_api_version=mqtt.CallbackAPIVersion.VERSION2,
@@ -75,7 +62,6 @@ class MQTTWorkerClient:
                 protocol=mqtt.MQTTv311,
             )
         except (AttributeError, TypeError):
-            # paho-mqtt v1.x — no CallbackAPIVersion
             self._client = mqtt.Client(
                 client_id=self._settings.mqtt_client_id,
                 protocol=mqtt.MQTTv311,
@@ -87,21 +73,15 @@ class MQTTWorkerClient:
                 self._settings.MQTT_PASSWORD,
             )
 
-        # LWT — auto-sent when worker disconnects unexpectedly
-        lwt_topic = f"worker/{self._worker_id}/status"
+        lwt_topic = "worker/{}/status".format(self._worker_id)
         lwt_payload = json.dumps({"status": "offline", "worker_id": self._worker_id})
         self._client.will_set(lwt_topic, payload=lwt_payload, qos=1, retain=True)
 
-        # Callbacks
         self._client.on_connect = self._on_connect
         self._client.on_disconnect = self._on_disconnect
         self._client.on_message = self._on_message
 
-        logger.info(
-            "Connecting to MQTT broker: %s:%d ...",
-            self._settings.MQTT_BROKER_HOST,
-            self._settings.MQTT_BROKER_PORT,
-        )
+        logger.info("Connecting to MQTT %s:%d ...", self._settings.MQTT_BROKER_HOST, self._settings.MQTT_BROKER_PORT)
         self._client.connect(
             host=self._settings.MQTT_BROKER_HOST,
             port=self._settings.MQTT_BROKER_PORT,
@@ -112,20 +92,15 @@ class MQTTWorkerClient:
     def disconnect(self) -> None:
         self._send_heartbeat(status=WorkerStatus.OFFLINE)
         self._stop_event.set()
-
         if self._heartbeat_thread and self._heartbeat_thread.is_alive():
             self._heartbeat_thread.join(timeout=5)
-
         if self._client:
             self._client.disconnect()
             self._client.loop_stop()
-
         self._connected = False
         self.stats["last_disconnected_at"] = time.time()
 
-    # ── Callbacks (compatible with both paho v1.x and v2.x) ──
     def _on_connect(self, client, userdata, flags, *args) -> None:
-        # v1: args = (rc,)  |  v2: args = (reason_code, properties)
         rc = args[0]
         if rc == 0:
             self._connected = True
@@ -133,10 +108,10 @@ class MQTTWorkerClient:
             self.stats["last_connected_at"] = time.time()
 
             topics = [
-                (f"task/{self._worker_id}/embed", 1),
-                (f"task/{self._worker_id}/match", 1),
-                (f"task/{self._worker_id}/message", 1),
-                (f"task/{self._worker_id}/model/update", 1),
+                ("task/{}/embed".format(self._worker_id), 1),
+                ("task/{}/match".format(self._worker_id), 1),
+                ("task/{}/message".format(self._worker_id), 1),
+                ("task/{}/model/update".format(self._worker_id), 1),
             ]
             for topic, qos in topics:
                 client.subscribe(topic, qos=qos)
@@ -147,7 +122,6 @@ class MQTTWorkerClient:
             logger.error("MQTT connection failed, rc=%s", rc)
 
     def _on_disconnect(self, client, userdata, *args) -> None:
-        # v1: args = (rc,)  |  v2: args = (flags, reason_code, properties)
         self._connected = False
         self.stats["last_disconnected_at"] = time.time()
         rc = args[-2] if len(args) >= 2 else args[0]
@@ -156,28 +130,15 @@ class MQTTWorkerClient:
 
     def _on_message(self, client, userdata, message: mqtt.MQTTMessage) -> None:
         self.stats["messages_received"] += 1
-
-        # Save to log buffer
-        try:
-            payload_str = message.payload.decode()[:200]
-        except Exception:
-            payload_str = "<binary>"
-
-        self._message_log.append((time.time(), message.topic, payload_str))
-        if len(self._message_log) > self._max_log:
-            self._message_log.pop(0)
-
         if self._message_handler:
             try:
                 self._message_handler(client, message)
             except Exception as exc:
                 logger.error("Error processing message '%s': %s", message.topic, exc)
 
-    # ── Handler ──────────────────────────────────────────────
     def set_message_handler(self, handler: MessageHandler) -> None:
         self._message_handler = handler
 
-    # ── Publish ──────────────────────────────────────────────
     def publish(self, topic: str, payload: str, qos: int = 1) -> bool:
         if self._client and self._connected:
             result = self._client.publish(topic, payload=payload, qos=qos)
@@ -186,9 +147,8 @@ class MQTTWorkerClient:
         return False
 
     def publish_result(self, task_id: str, payload: str) -> bool:
-        return self.publish(f"result/{task_id}", payload, qos=1)
+        return self.publish("result/{}".format(task_id), payload, qos=1)
 
-    # ── Heartbeat ────────────────────────────────────────────
     def _start_heartbeat(self) -> None:
         if self._heartbeat_thread and self._heartbeat_thread.is_alive():
             return
@@ -208,7 +168,6 @@ class MQTTWorkerClient:
             self._stop_event.wait(timeout=self._settings.HEARTBEAT_INTERVAL)
 
     def _send_heartbeat(self, status=WorkerStatus.IDLE):
-        # Get loaded models from model service
         try:
             from app.services.model_service import get_model_service
             loaded_models = get_model_service().loaded_models
@@ -226,13 +185,11 @@ class MQTTWorkerClient:
         if self.publish(topic, json.dumps(heartbeat.__dict__), qos=1):
             self.stats["heartbeats_sent"] += 1
 
-    # ── Manual heartbeat (for CLI) ───────────────────────────
     def send_manual_heartbeat(self, status: WorkerStatus = WorkerStatus.IDLE) -> bool:
         self._send_heartbeat(status)
         return self._connected
 
 
-# ── Singleton ────────────────────────────────────────────────
 _mqtt_client: Optional[MQTTWorkerClient] = None
 
 
