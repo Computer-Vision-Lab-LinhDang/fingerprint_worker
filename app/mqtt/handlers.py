@@ -96,8 +96,8 @@ def _handle_embed_task(task_svc, mqtt_client_ref, task_data):
 
 
 def _handle_model_update(mqtt_client_ref, payload):
-    """Handle model download in background thread."""
-    from app.services.model_service import get_model_service
+    """Handle model download + TensorRT conversion in background thread."""
+    from app.services.model_service import get_model_service, MODEL_DIR
 
     worker_id = mqtt_client_ref.worker_id
     model_service = get_model_service()
@@ -115,10 +115,37 @@ def _handle_model_update(mqtt_client_ref, payload):
         download_url=payload.download_url,
     )
 
-    # Publish: ready or failed
-    status = "ready" if success else "failed"
+    if not success:
+        _publish_model_status(
+            mqtt_client_ref, worker_id, payload, "failed", error,
+        )
+        return
+
+    # Auto-convert ONNX → TensorRT immediately after download
+    if payload.model_name.endswith(".onnx"):
+        import os
+        onnx_path = os.path.join(MODEL_DIR, payload.model_type, payload.model_name)
+        trt_path = onnx_path.replace(".onnx", ".trt")
+
+        if not os.path.exists(trt_path):
+            try:
+                from app.services.inference_service import convert_onnx_to_trt
+                _publish_model_status(
+                    mqtt_client_ref, worker_id, payload, "converting",
+                )
+                logger.info("Auto-converting %s → TensorRT...", payload.model_name)
+
+                converted = convert_onnx_to_trt(onnx_path, trt_path)
+                if converted:
+                    logger.info("✅ TensorRT conversion complete: %s", trt_path)
+                else:
+                    logger.warning("⚠️ TensorRT conversion failed, will use ONNX Runtime")
+            except Exception as exc:
+                logger.warning("⚠️ TensorRT conversion error: %s (will use ONNX Runtime)", exc)
+
+    # Publish: ready
     _publish_model_status(
-        mqtt_client_ref, worker_id, payload, status, error,
+        mqtt_client_ref, worker_id, payload, "ready",
     )
 
 
