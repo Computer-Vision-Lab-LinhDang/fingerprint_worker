@@ -12,6 +12,22 @@ import requests
 
 logger = logging.getLogger(__name__)
 
+# ── Cached inference engine (singleton) ──────────────────────
+_cached_engine = None
+_cached_model_path = None
+
+
+def _get_cached_engine(onnx_path):
+    """Get or create cached inference engine to avoid PyCUDA context crash."""
+    global _cached_engine, _cached_model_path
+    if _cached_engine is None or _cached_model_path != onnx_path:
+        from app.services.inference_service import create_inference_engine
+        _cached_engine = create_inference_engine(onnx_path)
+        _cached_engine.load()
+        _cached_model_path = onnx_path
+        logger.info("Loaded inference engine: %s", onnx_path)
+    return _cached_engine
+
 
 class TaskService(object):
     """Handles task processing logic with real inference."""
@@ -43,17 +59,14 @@ class TaskService(object):
             image_bytes = self._download_image(image_url)
             logger.info("Downloaded %d bytes", len(image_bytes))
 
-            # 2. Run inference
+            # 2. Run inference (use cached engine)
             from app.services.inference_service import (
                 create_inference_engine,
                 preprocess_from_bytes,
                 normalize_embedding,
             )
 
-            # Find model file
-            onnx_path = self._find_model(model_name)
-            engine = create_inference_engine(onnx_path)
-            engine.load()
+            engine = _get_cached_engine(self._find_model(model_name))
 
             input_data = preprocess_from_bytes(image_bytes)
             raw_output = engine.infer(input_data)
