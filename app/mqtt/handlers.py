@@ -102,51 +102,59 @@ def _handle_model_update(mqtt_client_ref, payload):
     worker_id = mqtt_client_ref.worker_id
     model_service = get_model_service()
 
-    # Publish: downloading
-    _publish_model_status(
-        mqtt_client_ref, worker_id, payload, "downloading",
-    )
+    # Mark worker as BUSY during model operations
+    task_id = "model_{}".format(payload.model_name)
+    mqtt_client_ref.current_task_id = task_id
 
-    # Download
-    success, error = model_service.download_model(
-        model_type=payload.model_type,
-        model_name=payload.model_name,
-        version=payload.version,
-        download_url=payload.download_url,
-    )
-
-    if not success:
+    try:
+        # Publish: downloading
         _publish_model_status(
-            mqtt_client_ref, worker_id, payload, "failed", error,
+            mqtt_client_ref, worker_id, payload, "downloading",
         )
-        return
 
-    # Auto-convert ONNX → TensorRT immediately after download
-    if payload.model_name.endswith(".onnx"):
-        import os
-        onnx_path = os.path.join(MODEL_DIR, payload.model_type, payload.model_name)
-        trt_path = onnx_path.replace(".onnx", ".trt")
+        # Download
+        success, error = model_service.download_model(
+            model_type=payload.model_type,
+            model_name=payload.model_name,
+            version=payload.version,
+            download_url=payload.download_url,
+        )
 
-        if not os.path.exists(trt_path):
-            try:
-                from app.services.inference_service import convert_onnx_to_trt
-                _publish_model_status(
-                    mqtt_client_ref, worker_id, payload, "converting",
-                )
-                logger.info("Auto-converting %s → TensorRT...", payload.model_name)
+        if not success:
+            _publish_model_status(
+                mqtt_client_ref, worker_id, payload, "failed", error,
+            )
+            return
 
-                converted = convert_onnx_to_trt(onnx_path, trt_path)
-                if converted:
-                    logger.info("✅ TensorRT conversion complete: %s", trt_path)
-                else:
-                    logger.warning("⚠️ TensorRT conversion failed, will use ONNX Runtime")
-            except Exception as exc:
-                logger.warning("⚠️ TensorRT conversion error: %s (will use ONNX Runtime)", exc)
+        # Auto-convert ONNX → TensorRT immediately after download
+        if payload.model_name.endswith(".onnx"):
+            import os
+            onnx_path = os.path.join(MODEL_DIR, payload.model_type, payload.model_name)
+            trt_path = onnx_path.replace(".onnx", ".trt")
 
-    # Publish: ready
-    _publish_model_status(
-        mqtt_client_ref, worker_id, payload, "ready",
-    )
+            if not os.path.exists(trt_path):
+                try:
+                    from app.services.inference_service import convert_onnx_to_trt
+                    _publish_model_status(
+                        mqtt_client_ref, worker_id, payload, "converting",
+                    )
+                    logger.info("Auto-converting %s → TensorRT...", payload.model_name)
+
+                    converted = convert_onnx_to_trt(onnx_path, trt_path)
+                    if converted:
+                        logger.info("✅ TensorRT conversion complete: %s", trt_path)
+                    else:
+                        logger.warning("⚠️ TensorRT conversion failed, will use ONNX Runtime")
+                except Exception as exc:
+                    logger.warning("⚠️ TensorRT conversion error: %s (will use ONNX Runtime)", exc)
+
+        # Publish: ready
+        _publish_model_status(
+            mqtt_client_ref, worker_id, payload, "ready",
+        )
+    finally:
+        # Always reset to idle
+        mqtt_client_ref.current_task_id = None
 
 
 def _publish_model_status(mqtt_client_ref, worker_id, payload, status, error=None):
