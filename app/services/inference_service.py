@@ -135,13 +135,18 @@ class TensorRTInference(object):
         self._outputs = []
         self._bindings = []
         self._stream = None
+        self._cuda_ctx = None
         self.backend = "trt"
 
     def load(self, progress_callback=None):
         """Load TensorRT engine with PyCUDA buffers."""
         import tensorrt as trt
         import pycuda.driver as cuda
-        import pycuda.autoinit  # noqa: F401
+
+        # Manual CUDA init (avoid pycuda.autoinit — causes crash on exit)
+        cuda.init()
+        device = cuda.Device(0)
+        self._cuda_ctx = device.make_context()
 
         if progress_callback:
             progress_callback("Loading TensorRT engine...")
@@ -171,33 +176,53 @@ class TensorRTInference(object):
             else:
                 self._outputs.append({"host": host_mem, "device": device_mem})
 
+        # Pop context from stack — we'll push/pop around each inference
+        self._cuda_ctx.pop()
+
         if progress_callback:
             progress_callback("TensorRT engine loaded with PyCUDA buffers")
+
+        # Register cleanup for graceful exit
+        import atexit
+        atexit.register(self._cleanup)
 
     def infer(self, preprocessed):
         """Run inference with TensorRT. Returns raw output array."""
         import pycuda.driver as cuda
 
-        # Copy input to page-locked host buffer
-        np.copyto(self._inputs[0]["host"], preprocessed.ravel())
+        self._cuda_ctx.push()
+        try:
+            # Copy input to page-locked host buffer
+            np.copyto(self._inputs[0]["host"], preprocessed.ravel())
 
-        # Transfer to GPU
-        for inp in self._inputs:
-            cuda.memcpy_htod_async(inp["device"], inp["host"], self._stream)
+            # Transfer to GPU
+            for inp in self._inputs:
+                cuda.memcpy_htod_async(inp["device"], inp["host"], self._stream)
 
-        # Execute
-        self.context.execute_async_v2(
-            bindings=self._bindings,
-            stream_handle=self._stream.handle,
-        )
+            # Execute
+            self.context.execute_async_v2(
+                bindings=self._bindings,
+                stream_handle=self._stream.handle,
+            )
 
-        # Transfer outputs back
-        for out in self._outputs:
-            cuda.memcpy_dtoh_async(out["host"], out["device"], self._stream)
+            # Transfer outputs back
+            for out in self._outputs:
+                cuda.memcpy_dtoh_async(out["host"], out["device"], self._stream)
 
-        self._stream.synchronize()
+            self._stream.synchronize()
 
-        return self._outputs[0]["host"].astype(np.float32)
+            return self._outputs[0]["host"].astype(np.float32)
+        finally:
+            self._cuda_ctx.pop()
+
+    def _cleanup(self):
+        """Clean up CUDA context on exit."""
+        if self._cuda_ctx:
+            try:
+                self._cuda_ctx.detach()
+                self._cuda_ctx = None
+            except Exception:
+                pass
 
 
 # ── Mock Inference (Development) ────────────────────────────
